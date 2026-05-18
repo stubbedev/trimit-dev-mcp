@@ -25,11 +25,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stubbedev/trimit-mcp.git"
+    "url": "git+https://github.com/stubbedev/trimit-dev-mcp.git"
   },
-  "homepage": "https://github.com/stubbedev/trimit-mcp#readme",
+  "homepage": "https://github.com/stubbedev/trimit-dev-mcp#readme",
   "bugs": {
-    "url": "https://github.com/stubbedev/trimit-mcp/issues"
+    "url": "https://github.com/stubbedev/trimit-dev-mcp/issues"
   },
   "license": "MIT",
   "keywords": [

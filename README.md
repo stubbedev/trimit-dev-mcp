@@ -204,8 +204,8 @@ Edit `~/.codex/config.json`:
 ## Development
 
 ```bash
-git clone https://github.com/stubbedev/trimit-mcp.git
-cd trimit-mcp
+git clone https://github.com/stubbedev/trimit-dev-mcp.git
+cd trimit-dev-mcp
 npm install
 npm run build
 npm start
