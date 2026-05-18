@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -15,6 +18,17 @@ import {
 } from "./categories/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { HOST, STD_API_PATH, TRIMIT_API_PATH, TRIMIT_AUTH, buildHeaders, trimitBase } from "./common.js";
+
+const PKG_VERSION: string = (() => {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = resolve(here, "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 // Static search lookup for search_trimit_api bootstrap tool
 const TRIMIT_API_SEARCH_MAP: Array<{
@@ -109,7 +123,7 @@ export class TrimitMcpServer {
   constructor() {
     this.registry = new ToolRegistry();
     this.mcpServer = new McpServer(
-      { name: "trimit-dev-assistant", version: "0.1.0" },
+      { name: "trimit-dev-assistant", version: PKG_VERSION },
       {
         capabilities: {
           tools: { listChanged: true },
