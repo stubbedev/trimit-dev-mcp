@@ -5,6 +5,9 @@ import { TRIMIT_AUTH, buildHeaders, buildOdataQuery, fetchExample, trimitBase } 
 const CATEGORY = "salesdocs";
 
 const DOC_TYPES = ["Quote", "Order", "Invoice", "Credit Memo", "Blanket Order", "Return Order"] as const;
+const SALES_LINE_TYPES = ["Item", "G/L Account", "Resource", "Fixed Asset", "Charge (Item)", "Comment"] as const;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATE_MSG = "YYYY-MM-DD";
 
 export const salesdocsTools: ToolDefinition[] = [
   {
@@ -228,7 +231,7 @@ export const salesdocsTools: ToolDefinition[] = [
       SellToCustomerName: z.string().optional(),
       sellToEmail: z.string().optional(),
       selltoPhoneNo: z.string().optional(),
-      orderDate: z.string().describe("YYYY-MM-DD"),
+      orderDate: z.string().regex(ISO_DATE, ISO_DATE_MSG),
       releaseDocument: z.boolean().optional(),
       additionalFields: z
         .array(z.object({ number: z.string().optional(), name: z.string(), value: z.string() }))
@@ -236,11 +239,11 @@ export const salesdocsTools: ToolDefinition[] = [
       salesReturnOrderLines: z
         .array(
           z.object({
-            lineNo: z.number(),
-            type: z.string().describe("Usually 'Item'"),
+            lineNo: z.number().int(),
+            type: z.enum(SALES_LINE_TYPES).describe("Usually 'Item'. Case-sensitive."),
             no: z.string().describe("Item number"),
-            unitPrice: z.number(),
-            quantity: z.number(),
+            unitPrice: z.number().describe("Decimal — string when IEEE754Compatible: true."),
+            quantity: z.number().describe("Decimal — string when IEEE754Compatible: true."),
             locationCode: z.string().optional(),
             additionalFields: z
               .array(z.object({ name: z.string(), value: z.string() }))
@@ -279,7 +282,7 @@ export const salesdocsTools: ToolDefinition[] = [
       docType: z.enum(DOC_TYPES),
       docNo: z.string(),
       SellToCustomerName: z.string().optional(),
-      orderDate: z.string().optional().describe("YYYY-MM-DD"),
+      orderDate: z.string().regex(ISO_DATE, ISO_DATE_MSG).optional(),
       releaseDocument: z.boolean().optional(),
       additionalFields: z
         .array(z.object({ name: z.string(), value: z.string() }))
@@ -287,15 +290,15 @@ export const salesdocsTools: ToolDefinition[] = [
       salesDocumentLines: z
         .array(
           z.object({
-            lineNo: z.number().optional(),
-            type: z.string().describe("'Item', 'G/L Account', etc."),
+            lineNo: z.number().int().optional(),
+            type: z.enum(SALES_LINE_TYPES).describe("Case-sensitive."),
             no: z.string(),
-            unitPrice: z.number().optional(),
-            quantity: z.number().optional(),
+            unitPrice: z.number().optional().describe("Decimal — string when IEEE754Compatible: true."),
+            quantity: z.number().optional().describe("Decimal — string when IEEE754Compatible: true."),
             unitOfMeasureCode: z.string().optional(),
             locationCode: z.string().optional(),
             periodCode: z.string().optional(),
-            discountAmount: z.number().optional(),
+            discountAmount: z.number().optional().describe("Decimal — string when IEEE754Compatible: true."),
             additionalFields: z.array(z.object({ name: z.string(), value: z.string() })).optional(),
           })
         )
@@ -329,7 +332,7 @@ export const salesdocsTools: ToolDefinition[] = [
       docType: z.enum(DOC_TYPES),
       docNo: z.string().describe("Customer-facing document number (unique per docType)"),
       sellToCustomerNo: z.string().describe("BC customer number, e.g. '10000'"),
-      orderDate: z.string().describe("YYYY-MM-DD"),
+      orderDate: z.string().regex(ISO_DATE, ISO_DATE_MSG),
       releaseDocument: z.boolean().optional().describe("Release the doc in BC on create."),
       additionalFields: z
         .array(z.object({ name: z.string(), value: z.string() }))
@@ -337,14 +340,14 @@ export const salesdocsTools: ToolDefinition[] = [
       salesDocumentLines: z
         .array(
           z.object({
-            type: z.string().describe("'Item', 'G/L Account', 'Resource', 'Fixed Asset', 'Charge (Item)'"),
+            type: z.enum(SALES_LINE_TYPES).describe("Case-sensitive."),
             no: z.string().describe("Item number / G/L account / etc."),
-            unitPrice: z.number(),
-            quantity: z.number(),
+            unitPrice: z.number().describe("Decimal — string when IEEE754Compatible: true."),
+            quantity: z.number().describe("Decimal — string when IEEE754Compatible: true."),
             unitOfMeasureCode: z.string().optional(),
             locationCode: z.string().optional(),
             periodCode: z.string().optional(),
-            discountAmount: z.number().optional(),
+            discountAmount: z.number().optional().describe("Decimal — string when IEEE754Compatible: true."),
             additionalFields: z
               .array(z.object({ name: z.string(), value: z.string() }))
               .optional(),

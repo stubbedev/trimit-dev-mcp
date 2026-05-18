@@ -1,205 +1,197 @@
-# TRIMIT Dev MCP
+# trimit-mcp
 
-An MCP server that helps you construct and validate [TRIMIT API](https://apidocs.trimit.com/) calls — the fashion/apparel ERP extension layered on Microsoft Dynamics 365 Business Central. No authentication required in the server itself.
+MCP server that generates request templates for the [TRIMIT API](https://apidocs.trimit.com/) — the fashion/apparel ERP extension on Microsoft Dynamics 365 Business Central.
 
-Tools are loaded on demand by resource category. Ask about sales orders and the salesdocs tools appear. Ask about masters and the products tools appear. The server starts lean and grows with your needs, and always knows the OAuth setup, URL templating, and OData conventions for every operation.
+Constructs the URL, method, headers, OData query string, body, and an OAuth-ready `fetch` snippet for every documented endpoint. Does **not** execute requests and holds no credentials.
 
-## What it does
+- 47 endpoint tools across 9 resource categories, lazy-loaded on demand
+- 17 always-on tools: search, category management, `$batch` builder, conceptual reference (`trimit_explain_*`), spec validators (`trimit_describe_entity`, `trimit_example_payload`, `trimit_validate_request`, `trimit_check_odata`, `trimit_lint_snippet`)
+- MCP resources: `trimit://entity/{name}`, `trimit://enum/{name}`, `trimit://entities`, `trimit://enums`, `trimit://categories`
+- MCP prompts: `review_sales_order_post`, `add_idempotent_export_loop`
+- Zod input schemas; OData v4 (`$filter`/`$select`/`$expand`/`$orderby`/`$top`/`$skip`/`$count`) built-in
+- Handles ETag (`If-Match`), `IEEE754Compatible` decimals, `@odata.nextLink` paging, `$batch` envelopes
+- TRIMIT integration path `api/trimit/integration/v1.1`, standard BC path `api/v2.0`, OData v4 at `/ODataV4`
 
-- Constructs valid TRIMIT / Business Central API request URLs, methods, headers, and bodies
-- Validates required and optional parameters via Zod schemas
-- Returns the OAuth 2.0 / Microsoft Entra setup for every operation
-- Returns ready-to-use fetch code examples
-- Links to official documentation
-- Explains cross-cutting concepts: OAuth auth, base URL templating, OData queries, ETag concurrency, `$batch`, paging, sales document lifecycle
-- Loads resource categories on demand — only what you need
+## Install
 
-## Tools
+`npx -y @stubbedev/trimit-mcp` (stdio transport).
 
-### Always available
-
-These tools are loaded immediately — no setup required.
-
-| Tool | Description |
-|---|---|
-| `list_categories` | List all resource categories and which are currently loaded |
-| `load_category` | Load tools for a category; triggers `tools/list_changed` |
-| `search_trimit_api` | Search TRIMIT API endpoints by keyword; returns a `suggestedCategory` to load |
-| `trimit_build_batch` | Build a valid `/$batch` request body from any number of operations |
-| `trimit_explain_auth` | OAuth 2.0 client credentials against Microsoft Entra |
-| `trimit_explain_base_urls` | Base URL structure; `{tenant}`, `{environment}`, `{companyId}` substitution |
-| `trimit_explain_odata` | `$filter`, `$select`, `$expand`, `$orderby`, `$top`, `$count` with examples |
-| `trimit_explain_paging` | `@odata.nextLink` iteration and the BC 20 000-row page cap |
-| `trimit_explain_concurrency` | `@odata.etag`, `If-Match`, `IEEE754Compatible` decimals |
-| `trimit_explain_batch` | OData `$batch` envelope, `dependsOn`, response matching |
-| `trimit_explain_doc_lifecycle` | Sales Import Journal → processed → posted; `exportedDocuments` markers |
-| `trimit_explain_errors` | 400 / 401 / 403 / 404 / 409 / 412 / 429 and BC error codes |
-
-### Resource categories (loaded on demand)
-
-| Category | Tools | What you get |
-|---|---|---|
-| **standard** | 8 | Microsoft BC standard API: companies (incl. ODataV4 view), items, customers (GET + PATCH defaultDimensions), `$metadata` (API + ODataV4), entityDefinitions |
-| **masterdata** | 8 | Campaigns, customerPriceGroups, priceGroupParameters, VarDimCombinations, vardimtypes, vardimtypevalues, itemAttributes, collections |
-| **products** | 4 | TRIMIT Masters (style headers), Items (SKUs), Products feed, Categories — all with full expand defaults |
-| **inventory** | 2 | Locations, Inventories (incl. Future Delivers) |
-| **customers** | 5 | TRIMIT-enriched customers list, contacts, salespersons, POST customer, PATCH customer (additionalFields, If-Match, IEEE754Compatible) |
-| **salesdocs** | 11 | Quote / Order / Invoice / Credit Memo / Blanket Order / Return Order — list, list-processed, get-by-systemId, typed lists (orders/invoices/credit memos/return orders), POST return order, POST sales document (create + add-fields), `$batch` bulk insert |
-| **postedsales** | 5 | Posted documents (union), posted invoices, posted credit memos, posted return receipts, posted shipments (with tracking lines) |
-| **exported** | 3 | GET / POST / DELETE `exportedDocuments` markers — exclude already-processed docs from future polls |
-| **metadata** | 1 | TRIMIT integration API `$metadata` (EDMX) for codegen |
-
-### Example tool output
-
-Every tool returns a structured object with the full request details and auth requirements:
-
-```json
-{
-  "endpoint": "https://api.businesscentral.dynamics.com/v2.0/{tenant}/{environment}/api/trimit/integration/v1.1/companies({companyId})/masters?$expand=masterDescriptions,masterDefDims,...",
-  "method": "GET",
-  "headers": {
-    "Authorization": "Bearer {token}",
-    "Content-Type": "application/json",
-    "Accept": "application/json"
-  },
-  "pathParams": { "tenant": "{tenant}", "environment": "{environment}", "companyId": "{companyId}" },
-  "queryParams": { "$expand": "masterDescriptions,masterDefDims,..." },
-  "body": null,
-  "description": "TRIMIT Masters (style headers).",
-  "docsUrl": "https://apidocs.trimit.com/",
-  "codeExample": "const response = await fetch('...', { method: 'GET', headers: { Authorization: 'Bearer {token}' } });\nconst data = await response.json();",
-  "auth": {
-    "type": "OAuth 2.0 — Microsoft Entra (Azure AD) client credentials",
-    "tokenEndpoint": "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
-    "scope": "https://api.businesscentral.dynamics.com/.default",
-    "notes": "Customer-tenant Entra app registration with Business Central / TRIMIT integration consent."
-  },
-  "notes": "Key fields: number (master code), noSystem (SKU template), masterItems → SKU variants. Heavy payload — narrow with $select and trimmed $expand for production traffic."
-}
-```
-
----
-
-## Installation
-
-The recommended way to run this server is via `npx` — no local install needed.
-
-```
-npx -y @stubbedev/trimit-mcp
-```
-
-### Claude Desktop
-
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
-
-```json
-{
-  "mcpServers": {
-    "trimit-dev": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/trimit-mcp"]
-    }
-  }
-}
-```
-
-### Claude Code (CLI)
+### Claude Code
 
 ```bash
 claude mcp add trimit-dev -- npx -y @stubbedev/trimit-mcp
 ```
 
-Or add to your project's `.mcp.json`:
+Or `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "trimit-dev": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/trimit-mcp"]
-    }
+    "trimit-dev": { "command": "npx", "args": ["-y", "@stubbedev/trimit-mcp"] }
+  }
+}
+```
+
+### Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "trimit-dev": { "command": "npx", "args": ["-y", "@stubbedev/trimit-mcp"] }
   }
 }
 ```
 
 ### Cursor
 
-Open **Settings → MCP** and add a new server, or edit `~/.cursor/mcp.json`:
+`~/.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "trimit-dev": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/trimit-mcp"]
-    }
+    "trimit-dev": { "command": "npx", "args": ["-y", "@stubbedev/trimit-mcp"] }
   }
 }
 ```
 
 ### Windsurf
 
-Edit `~/.codeium/windsurf/mcp_config.json`:
+`~/.codeium/windsurf/mcp_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "trimit-dev": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/trimit-mcp"]
-    }
+    "trimit-dev": { "command": "npx", "args": ["-y", "@stubbedev/trimit-mcp"] }
   }
 }
 ```
 
 ### Zed
 
-Edit your `settings.json` (open via **Zed → Settings → Open Settings**):
+`settings.json`:
 
 ```json
 {
   "context_servers": {
-    "trimit-dev": {
-      "command": {
-        "path": "npx",
-        "args": ["-y", "@stubbedev/trimit-mcp"]
-      }
-    }
+    "trimit-dev": { "command": { "path": "npx", "args": ["-y", "@stubbedev/trimit-mcp"] } }
   }
 }
 ```
 
 ### OpenCode
 
-Edit `~/.config/opencode/config.json`:
+`~/.config/opencode/config.json`:
 
 ```json
 {
   "mcp": {
-    "trimit-dev": {
-      "type": "local",
-      "command": ["npx", "-y", "@stubbedev/trimit-mcp"]
-    }
+    "trimit-dev": { "type": "local", "command": ["npx", "-y", "@stubbedev/trimit-mcp"] }
   }
 }
 ```
 
 ### Codex (OpenAI)
 
-Edit `~/.codex/config.json`:
+`~/.codex/config.toml`:
 
-```json
+```toml
+[mcp_servers.trimit-dev]
+command = "npx"
+args = ["-y", "@stubbedev/trimit-mcp"]
+```
+
+## Architecture
+
+Bootstrap tools are registered at startup. Endpoint tools register only after `load_category` is called for their category — each call emits `notifications/tools/list_changed`. This keeps the active tool surface small (~12 tools idle, +N per loaded category).
+
+Every endpoint tool returns:
+
+```ts
 {
-  "mcpServers": {
-    "trimit-dev": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/trimit-mcp"]
-    }
-  }
+  endpoint: string;          // fully-qualified URL with {tenant}/{environment}/{companyId} placeholders
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  headers: Record<string, string>;
+  pathParams: Record<string, string>;
+  queryParams: Record<string, string>;  // OData $-params
+  body: unknown | null;
+  description: string;
+  docsUrl: string;
+  codeExample: string;       // ready-to-paste fetch() snippet
+  auth: { type, tokenEndpoint, scope, notes };
+  notes: string | null;      // gotchas (read-replica hints, case-sensitivity, etc.)
 }
 ```
 
----
+## Bootstrap tools
+
+| Tool | Purpose |
+|---|---|
+| `list_categories` | Enumerate categories + loaded state + tool count |
+| `load_category` | Register tools for a category, emit `tools/list_changed` |
+| `search_trimit_api` | Keyword → endpoint match with `suggestedCategory` |
+| `trimit_build_batch` | Build `/$batch` envelope (validates method, `dependsOn`, headers) |
+| `trimit_explain_auth` | OAuth 2.0 client credentials + Entra app prerequisites |
+| `trimit_explain_base_urls` | URL anatomy + placeholder resolution |
+| `trimit_explain_odata` | Query parameter reference w/ examples |
+| `trimit_explain_paging` | `@odata.nextLink` pattern; 20 000-row BC page cap |
+| `trimit_explain_concurrency` | `@odata.etag` / `If-Match` / `IEEE754Compatible` |
+| `trimit_explain_batch` | `$batch` envelope spec + response matching |
+| `trimit_explain_doc_lifecycle` | Sales Import Journal → processed → posted; `exportedDocuments` markers |
+| `trimit_explain_errors` | 400/401/403/404/409/412/429 + BC error codes |
+| `trimit_describe_entity` | Field schema for an entity (types, required/mutable, enum refs, decimals, nav props, default `$expand`) |
+| `trimit_example_payload` | Generate minimal/full POST or PATCH body template for an entity |
+| `trimit_validate_request` | Validate `{endpoint, method, headers, body}` against the spec — issues + fix suggestions |
+| `trimit_check_odata` | Validate `$filter` / `$select` / `$expand` / `$orderby` / `$top` / `$skip` |
+| `trimit_lint_snippet` | Lint user integration code for BC pitfalls (no `If-Match`, no `nextLink`, hardcoded token, missing IEEE754, doctype casing, `=` vs `eq`, etc.) |
+
+## Resources
+
+| URI | Returns |
+|---|---|
+| `trimit://entities` | Catalog of all entities |
+| `trimit://entity/{name}` | Schema for one entity (URI completion supported) |
+| `trimit://enums` | Catalog of all enums |
+| `trimit://enum/{name}` | Allowed values for one enum |
+| `trimit://categories` | Tool category catalog with load state |
+
+## Prompts
+
+| Name | Produces |
+|---|---|
+| `review_sales_order_post` | Audit a `/salesDocuments` POST body + headers against the spec |
+| `add_idempotent_export_loop` | Refactor a poller to use `/exportedDocuments` markers |
+
+## Categories
+
+| Category | N | Endpoints |
+|---|---|---|
+| `standard` | 8 | `companies`, `companies` (OData v4), `items`, `customers` (GET + PATCH `defaultDimensions` w/ `If-Match`), `$metadata` (REST + OData), `entityDefinitions` |
+| `masterdata` | 8 | `campaigns`, `customerPriceGroups`, `priceGroupParameters`, `VarDimCombinations`, `vardimtypes`, `vardimtypevalues`, `itemAttributes`, `collections` |
+| `products` | 4 | `masters`, `items`, `products`, `categories` (sensible default `$expand`) |
+| `inventory` | 2 | `locations`, `inventories` (Future Delivers when enabled) |
+| `customers` | 5 | TRIMIT `customers` list, `contacts`, `salespersons`, POST customer, PATCH customer (`additionalFields`, `If-Match`, `IEEE754Compatible`) |
+| `salesdocs` | 11 | `salesDocuments` list/processed/by-systemId, typed lists (`salesOrders`/`salesInvoices`/`salesCreditMemos`/`salesReturnOrders`), POST return order, POST sales doc (create + append), `/$batch` |
+| `postedsales` | 5 | `postedSalesDocuments`, `postedSalesInvoices`, `postedSalesCreditMemos`, `postedSalesReturnReceipts`, `postedSalesShipments` (w/ `trackingLines`) |
+| `exported` | 3 | `exportedDocuments` GET/POST/DELETE |
+| `metadata` | 1 | TRIMIT `$metadata` EDMX |
+
+## Auth
+
+OAuth 2.0 client credentials against Microsoft Entra:
+
+```
+POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+grant_type=client_credentials
+&client_id={clientId}
+&client_secret={clientSecret}
+&scope=https://api.businesscentral.dynamics.com/.default
+```
+
+Send `Authorization: Bearer {token}` on every call. Tokens ~1h. Requires an Entra app registration on the customer tenant, admin consent, and a matching BC permission set (e.g. `D365 BUS PREMIUM`).
+
+Placeholders to substitute before issuing requests: `{tenant}` (Entra GUID), `{environment}` (`Production` / `Sandbox` / custom), `{companyId}` (BC company GUID — resolve via `trimit_std_get_companies`).
 
 ## Development
 
@@ -207,24 +199,50 @@ Edit `~/.codex/config.json`:
 git clone https://github.com/stubbedev/trimit-dev-mcp.git
 cd trimit-dev-mcp
 npm install
-npm run build
-npm start
+npm run build     # tsc → dist/
+npm run dev       # tsx watch
+npm start         # node dist/index.js
 ```
 
-For live reload during development:
+Smoke check (boots server, validates `tools/list` response, asserts non-empty + well-formed):
 
 ```bash
-npm run dev
+npm run smoke:validate
 ```
 
-### Test with MCP Inspector
+Interactive debugging:
 
 ```bash
 npx @modelcontextprotocol/inspector npx -y @stubbedev/trimit-mcp
 ```
 
----
+Release (runs `preversion` → build + smoke, then tags, pushes, creates GitHub release):
+
+```bash
+npm run release:patch   # | release:minor | release:major
+```
+
+Layout:
+
+```
+src/
+  index.ts            # entry
+  server.ts           # McpServer + bootstrap tools
+  registry.ts         # ToolRegistry (per-category load/unload)
+  common.ts           # base URLs, buildOdataQuery, fetchExample, TRIMIT_AUTH
+  categories/         # one file per category, exports ToolDefinition[]
+  spec/
+    types.ts          # Entity/Field/EnumDef types
+    enums.ts          # Static enum catalog (docType, customerType, salesLineType, ...)
+    entities.ts       # Entity registry — fields/keys/nav props/defaultExpand
+    payloads.ts       # buildPayload(entity, op, shape) → request body templates
+    odata.ts          # $filter/$select/$expand/$orderby validators
+    validate.ts       # validateRequest({endpoint, method, headers, body})
+    lint.ts           # lintSnippet(code) — BC pitfall heuristics
+```
+
+Add an endpoint: append a `ToolDefinition` to the relevant `categories/*.ts`, re-export if new category, add a `CATEGORY_TOOL_MAP` entry + description in `server.ts`.
 
 ## License
 
-MIT
+[MIT](./LICENSE)

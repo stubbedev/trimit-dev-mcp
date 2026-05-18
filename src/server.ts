@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ToolRegistry } from "./registry.js";
@@ -18,6 +18,12 @@ import {
 } from "./categories/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { HOST, STD_API_PATH, TRIMIT_API_PATH, TRIMIT_AUTH, buildHeaders, trimitBase } from "./common.js";
+import { ENTITIES, ENTITY_NAMES, findEntityByResourcePath, getEntity } from "./spec/entities.js";
+import { ENUMS } from "./spec/enums.js";
+import { buildPayload, entitySummary } from "./spec/payloads.js";
+import { checkOdata } from "./spec/odata.js";
+import { validateRequest } from "./spec/validate.js";
+import { lintSnippet } from "./spec/lint.js";
 
 const PKG_VERSION: string = (() => {
   try {
@@ -127,6 +133,8 @@ export class TrimitMcpServer {
       {
         capabilities: {
           tools: { listChanged: true },
+          resources: { listChanged: false, subscribe: false },
+          prompts: { listChanged: false },
         },
         instructions:
           "Use this server whenever the user is building, debugging, or learning about the TRIMIT API — the fashion/apparel ERP extension layered on Microsoft Dynamics 365 Business Central (api.businesscentral.dynamics.com). " +
@@ -152,11 +160,29 @@ export class TrimitMcpServer {
           "   - @odata.nextLink / pagination → trimit_explain_paging\n" +
           "   - Sales document lifecycle / processed vs exported → trimit_explain_doc_lifecycle\n" +
           "   - Errors / 401 / 403 / 409 / 412 → trimit_explain_errors\n\n" +
+          "VALIDATING USER CODE — use the spec tools:\n" +
+          "   - trimit_describe_entity — fields, types, required/mutable, enums, navigation properties\n" +
+          "   - trimit_example_payload — minimal or full POST/PATCH body template per entity\n" +
+          "   - trimit_validate_request — check a constructed request (endpoint/method/headers/body) against the TRIMIT spec\n" +
+          "   - trimit_check_odata — validate $filter / $select / $expand / $orderby / $top / $skip\n" +
+          "   - trimit_lint_snippet — scan user's integration code for BC pitfalls (no If-Match, no nextLink loop, hardcoded token, missing IEEE754, etc.)\n\n" +
+          "RESOURCES — readable spec catalog:\n" +
+          "   - trimit://entity/{name}    — entity schema as JSON\n" +
+          "   - trimit://enum/{name}      — enum allowed values\n" +
+          "   - trimit://entities         — list of all entities\n" +
+          "   - trimit://enums            — list of all enums\n" +
+          "   - trimit://categories       — tool category catalog\n\n" +
+          "PROMPTS — workflows:\n" +
+          "   - review_sales_order_post   — audit a /salesDocuments POST body + headers\n" +
+          "   - add_idempotent_export_loop — guide adding exportedDocuments marker logic to a poller\n\n" +
           "This server constructs TRIMIT API requests (endpoint, method, headers, body, code example, auth) — it does not execute them.",
       }
     );
 
     this.registerBootstrapTools();
+    this.registerSpecTools();
+    this.registerResources();
+    this.registerPrompts();
   }
 
   private registerBootstrapTools(): void {
@@ -788,6 +814,446 @@ Transient — retry with exponential backoff. Persistent 500s on a single record
 https://learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/api-reference/v2.0/dynamics-error-codes`;
         return { content: [{ type: "text" as const, text }] };
       }
+    );
+  }
+
+  private registerSpecTools(): void {
+    // trimit_describe_entity
+    this.mcpServer.tool(
+      "trimit_describe_entity",
+      "Return the schema for a TRIMIT entity: fields with types, required/mutable flags, enums, decimal markers, navigation properties, default $expand, and notes. Pass entity name (e.g. 'customer', 'salesDocument', 'salesReturnOrder', 'exportedDocument', 'master', 'item', 'campaign', 'inventory') OR resourcePath (e.g. 'customers', 'salesDocuments'). Call list_entities() shape via the trimit://entities resource for the full list.",
+      {
+        entity: z.string().optional().describe("Entity name from the registry"),
+        resourcePath: z.string().optional().describe("URL segment, e.g. 'customers'"),
+      },
+      async ({ entity, resourcePath }) => {
+        const resolved = entity ? getEntity(entity) : resourcePath ? findEntityByResourcePath(resourcePath) : undefined;
+        if (!resolved) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    error: `Unknown entity. Provide one of: ${ENTITY_NAMES.join(", ")}`,
+                    available: ENTITY_NAMES,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(entitySummary(resolved), null, 2) },
+          ],
+        };
+      }
+    );
+
+    // trimit_example_payload
+    this.mcpServer.tool(
+      "trimit_example_payload",
+      "Generate a request body template for an entity. shape='minimal' returns only required fields (create) or one mutable field (patch); shape='full' returns every writable field with placeholder values. Decimal fields are emitted as numbers — wrap as strings if you send IEEE754Compatible: true.",
+      {
+        entity: z.string().describe("Entity name, e.g. 'customer', 'salesDocument', 'salesReturnOrder'"),
+        operation: z.enum(["create", "patch"]).default("create"),
+        shape: z.enum(["minimal", "full"]).default("minimal"),
+      },
+      async ({ entity, operation, shape }) => {
+        const e = getEntity(entity);
+        if (!e) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: `Unknown entity '${entity}'`, available: ENTITY_NAMES }, null, 2),
+              },
+            ],
+          };
+        }
+        const payload = buildPayload(entity, operation, shape);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  entity,
+                  operation,
+                  shape,
+                  method: operation === "create" ? "POST" : "PATCH",
+                  contentType: "application/json",
+                  recommendedHeaders:
+                    operation === "patch"
+                      ? { "If-Match": "*", "IEEE754Compatible": "true" }
+                      : { "IEEE754Compatible": "true" },
+                  body: payload,
+                  notes: e.notes,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // trimit_validate_request
+    this.mcpServer.tool(
+      "trimit_validate_request",
+      "Validate a constructed TRIMIT/BC request against the spec. Checks base path, placeholder substitution, required headers (Authorization, Content-Type, If-Match on PATCH/DELETE, IEEE754Compatible when decimals are present), body shape (required fields, unknown fields, enum casing, type mismatches, immutable fields on PATCH), nested arrays (e.g. salesDocumentLines), $batch envelope, and embedded OData query parameters. Returns a list of issues with severity, code, path, and fix suggestion.",
+      {
+        endpoint: z.string().describe("Full URL with or without placeholders"),
+        method: z.enum(["GET", "POST", "PATCH", "PUT", "DELETE"]),
+        headers: z.record(z.string(), z.string()).optional(),
+        body: z.unknown().optional(),
+      },
+      async ({ endpoint, method, headers, body }) => {
+        const issues = validateRequest({ endpoint, method, headers, body });
+        const errors = issues.filter((i) => i.severity === "error").length;
+        const warnings = issues.filter((i) => i.severity === "warning").length;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  summary: { errors, warnings, info: issues.length - errors - warnings, total: issues.length },
+                  ok: errors === 0,
+                  issues,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // trimit_check_odata
+    this.mcpServer.tool(
+      "trimit_check_odata",
+      "Validate an OData query against the TRIMIT spec. Checks $filter (parenthesis balance, quote escaping, '=' vs 'eq', null compares, datetime format, unknown fields), $select (unknown fields), $expand (unknown navigation properties, OData v4 nested syntax), $orderby, $top (page cap), $skip. Pass entity or resourcePath to enable field-name resolution.",
+      {
+        entity: z.string().optional(),
+        resourcePath: z.string().optional(),
+        filter: z.string().optional(),
+        select: z.array(z.string()).optional(),
+        expand: z.string().optional(),
+        orderby: z.string().optional(),
+        top: z.number().optional(),
+        skip: z.number().optional(),
+      },
+      async (args) => {
+        const issues = checkOdata(args);
+        const errors = issues.filter((i) => i.severity === "error").length;
+        const warnings = issues.length - errors;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  summary: { errors, warnings, total: issues.length },
+                  ok: errors === 0,
+                  issues,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // trimit_lint_snippet
+    this.mcpServer.tool(
+      "trimit_lint_snippet",
+      "Scan a user's integration code (JS/TS/Python/curl) for common TRIMIT/BC pitfalls: hardcoded tokens, missing token-refresh, missing @odata.nextLink loop, PATCH without If-Match, decimal fields without IEEE754Compatible, no 429/Retry-After handling, polling /salesDocuments without exportedDocuments markers, $batch sub-requests without id or with absolute URLs, $filter using '=' instead of 'eq', unquoted string literals, case-wrong docType, wrong API base for TRIMIT resources.",
+      {
+        snippet: z.string().describe("Source code, fetch call, or pseudocode to lint"),
+      },
+      async ({ snippet }) => {
+        const findings = lintSnippet(snippet);
+        const errors = findings.filter((f) => f.severity === "error").length;
+        const warnings = findings.filter((f) => f.severity === "warning").length;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  summary: { errors, warnings, info: findings.length - errors - warnings, total: findings.length },
+                  ok: errors === 0,
+                  findings,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+  }
+
+  private registerResources(): void {
+    // trimit://entities — list of all entities
+    this.mcpServer.registerResource(
+      "entities",
+      "trimit://entities",
+      {
+        title: "TRIMIT entities",
+        description: "List of all known TRIMIT/BC entities exposed in the spec catalog.",
+        mimeType: "application/json",
+      },
+      async (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(
+              {
+                entities: Object.values(ENTITIES).map((e) => ({
+                  name: e.name,
+                  resourcePath: e.resourcePath,
+                  category: e.category,
+                  apiBase: e.apiBase,
+                  keys: e.keys,
+                })),
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      })
+    );
+
+    // trimit://enums — list of all enums
+    this.mcpServer.registerResource(
+      "enums",
+      "trimit://enums",
+      {
+        title: "TRIMIT enums",
+        description: "List of all enums referenced by entity fields.",
+        mimeType: "application/json",
+      },
+      async (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify({ enums: Object.values(ENUMS) }, null, 2),
+          },
+        ],
+      })
+    );
+
+    // trimit://categories — tool category catalog
+    this.mcpServer.registerResource(
+      "categories",
+      "trimit://categories",
+      {
+        title: "TRIMIT tool categories",
+        description: "Lazy-loadable tool categories with descriptions and tool counts.",
+        mimeType: "application/json",
+      },
+      async (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(
+              {
+                categories: Object.entries(CATEGORY_DESCRIPTIONS).map(([name, description]) => ({
+                  name,
+                  description,
+                  toolCount: CATEGORY_TOOL_MAP[name]?.length ?? 0,
+                  loaded: this.registry.loadedCategories.has(name),
+                })),
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      })
+    );
+
+    // trimit://entity/{name}
+    this.mcpServer.registerResource(
+      "entity",
+      new ResourceTemplate("trimit://entity/{name}", {
+        list: async () => ({
+          resources: Object.values(ENTITIES).map((e) => ({
+            uri: `trimit://entity/${e.name}`,
+            name: e.name,
+            description: `${e.resourcePath} (${e.category}) — ${e.fields.length} fields`,
+            mimeType: "application/json",
+          })),
+        }),
+        complete: {
+          name: async (value) =>
+            ENTITY_NAMES.filter((n) => n.toLowerCase().startsWith(value.toLowerCase())).slice(0, 20),
+        },
+      }),
+      {
+        title: "TRIMIT entity schema",
+        description: "Field-level schema for a single entity.",
+        mimeType: "application/json",
+      },
+      async (uri, variables) => {
+        const name = String(variables.name);
+        const entity = getEntity(name);
+        if (!entity) {
+          return {
+            contents: [
+              {
+                uri: uri.href,
+                mimeType: "application/json",
+                text: JSON.stringify({ error: `Unknown entity '${name}'`, available: ENTITY_NAMES }, null, 2),
+              },
+            ],
+          };
+        }
+        return {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: "application/json",
+              text: JSON.stringify(entitySummary(entity), null, 2),
+            },
+          ],
+        };
+      }
+    );
+
+    // trimit://enum/{name}
+    this.mcpServer.registerResource(
+      "enum",
+      new ResourceTemplate("trimit://enum/{name}", {
+        list: async () => ({
+          resources: Object.values(ENUMS).map((e) => ({
+            uri: `trimit://enum/${e.name}`,
+            name: e.name,
+            description: e.description,
+            mimeType: "application/json",
+          })),
+        }),
+        complete: {
+          name: async (value) =>
+            Object.keys(ENUMS)
+              .filter((n) => n.toLowerCase().startsWith(value.toLowerCase()))
+              .slice(0, 20),
+        },
+      }),
+      {
+        title: "TRIMIT enum",
+        description: "Allowed values for a single enum.",
+        mimeType: "application/json",
+      },
+      async (uri, variables) => {
+        const name = String(variables.name);
+        const e = ENUMS[name];
+        if (!e) {
+          return {
+            contents: [
+              {
+                uri: uri.href,
+                mimeType: "application/json",
+                text: JSON.stringify({ error: `Unknown enum '${name}'`, available: Object.keys(ENUMS) }, null, 2),
+              },
+            ],
+          };
+        }
+        return {
+          contents: [
+            { uri: uri.href, mimeType: "application/json", text: JSON.stringify(e, null, 2) },
+          ],
+        };
+      }
+    );
+  }
+
+  private registerPrompts(): void {
+    this.mcpServer.registerPrompt(
+      "review_sales_order_post",
+      {
+        title: "Review /salesDocuments POST",
+        description: "Audit a sales document create payload against the TRIMIT spec, with emphasis on docType casing, line types, decimals, releaseDocument behavior, and IEEE754Compatible.",
+        argsSchema: {
+          body: z.string().describe("JSON body the client intends to POST to /salesDocuments"),
+          headers: z.string().optional().describe("Optional JSON object of headers"),
+        },
+      },
+      ({ body, headers }) => ({
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text:
+                "Audit this /salesDocuments POST against the TRIMIT spec. Then call trimit_validate_request with the parsed body/headers and report the findings inline.\n\n" +
+                "Specifically check:\n" +
+                "1. docType casing — must match enum exactly ('Order', not 'order').\n" +
+                "2. salesDocumentLines[].type — must be in salesLineType enum, case-sensitive.\n" +
+                "3. Decimals (unitPrice, quantity, discountAmount) — recommend IEEE754Compatible: true with string values.\n" +
+                "4. orderDate — YYYY-MM-DD only.\n" +
+                "5. releaseDocument behavior — true releases in BC immediately; ensure caller intends this.\n" +
+                "6. additionalFields shape on header vs lines.\n" +
+                "7. Header completeness — Authorization, Content-Type, IEEE754Compatible.\n\n" +
+                "Body:\n```json\n" +
+                body +
+                "\n```\n" +
+                (headers ? "Headers:\n```json\n" + headers + "\n```\n" : "") +
+                "\nReturn: a numbered list of issues with severity, then the corrected body if applicable.",
+            },
+          },
+        ],
+      })
+    );
+
+    this.mcpServer.registerPrompt(
+      "add_idempotent_export_loop",
+      {
+        title: "Add idempotent export loop",
+        description: "Guide refactoring a /salesDocuments poller to use /exportedDocuments markers so the same doc is not re-processed.",
+        argsSchema: {
+          snippet: z.string().describe("Current polling code"),
+          language: z.string().optional().describe("Source language hint, e.g. typescript / python"),
+        },
+      },
+      ({ snippet, language }) => ({
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text:
+                "Refactor this TRIMIT /salesDocuments poller into an idempotent export loop using /exportedDocuments markers. Call trimit_lint_snippet on the input first and address any findings related to lifecycle/paging/auth.\n\n" +
+                "Required behavior of the rewrite:\n" +
+                "1. GET /salesDocuments() with $filter=(processedDate gt 0001-01-01) so only processed docs come back.\n" +
+                "2. Iterate @odata.nextLink until exhausted.\n" +
+                "3. For each doc, after successful downstream handoff, POST /exportedDocuments {type, number}.\n" +
+                "4. On downstream failure, do NOT POST the marker — the doc must reappear on next poll.\n" +
+                "5. Handle 401 by refreshing the token and retrying once.\n" +
+                "6. Respect 429 Retry-After.\n" +
+                "7. Recovery: document how to DELETE /exportedDocuments(type, number) to re-include a doc.\n\n" +
+                (language ? `Source language: ${language}\n\n` : "") +
+                "Current code:\n```\n" +
+                snippet +
+                "\n```",
+            },
+          },
+        ],
+      })
     );
   }
 
