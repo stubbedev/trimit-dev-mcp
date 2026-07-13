@@ -1,6 +1,6 @@
 {
   "name": "@stubbedev/trimit-mcp",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "MCP server for TRIMIT (Microsoft Dynamics 365 Business Central) API development assistance",
   "type": "module",
   "main": "dist/index.js",
