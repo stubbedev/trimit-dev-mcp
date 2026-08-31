@@ -46,11 +46,11 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/node": "^25.9.5",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "npm-check-updates": "^22.2.9",
     "typescript": "^6.0.3"
   }
